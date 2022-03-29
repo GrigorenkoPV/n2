@@ -2,6 +2,7 @@
 
 use crate::canon::{canon_path, canon_path_in_place};
 use crate::densemap::{self, DenseMap};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{self, Hasher};
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use std::time::SystemTime;
 
 /// Hash value used to identify a given instance of a Build's execution;
 /// compared to verify whether a Build is up to date.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Hash(pub u64);
 
 /// Id for File nodes in the Graph.
