@@ -67,12 +67,11 @@ impl Loader {
 
     /// Convert a path string to a FileId.  For performance reasons
     /// this requires an owned 'path' param.
-    fn path(&mut self, mut path: String) -> FileId {
+    fn path(&mut self, path: String) -> FileId {
         // Perf: this is called while parsing build.ninja files.  We go to
         // some effort to avoid allocating in the common case of a path that
         // refers to a file that is already known.
-        let len = canon_path_fast(&mut path);
-        path.truncate(len);
+        let path = canon_path_fast(path);
         self.graph.files.id_from_canonical(path)
     }
 
