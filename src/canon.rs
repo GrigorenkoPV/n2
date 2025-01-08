@@ -1,5 +1,6 @@
 //! Path canonicalization.
 
+use std::hint::assert_unchecked;
 use std::mem::MaybeUninit;
 
 /// An on-stack stack of values.
@@ -40,103 +41,97 @@ impl<T: Copy, const CAPACITY: usize> StackStack<T, CAPACITY> {
 /// Does not access the disk, but only simplifies things like
 /// "foo/./bar" => "foo/bar".
 /// These paths can show up due to variable expansion in particular.
-/// Returns the new length of the path, guaranteed <= the original length.
-#[must_use]
-pub fn canon_path_fast(mut path: String) -> String {
+pub fn canon_path_fast(path: &mut String) {
     assert!(!path.is_empty());
-    // Safety: this traverses the path buffer to move data around.
-    // We maintain the invariant that *dst always points to a point within
-    // the buffer, and that src is always checked against end before reading.
-    unsafe {
-        let mut components = StackStack::<usize, 60>::new();
-        let mut dst = 0;
-        let mut src = 0;
-        let end = path.len();
-        let data = path.as_mut_ptr();
+    let mut components = StackStack::<usize, 60>::new();
 
-        if src == end {
-            return path;
-        }
-        if let b'/' | b'\\' = data.add(src).read() {
-            src += 1;
-            dst += 1;
-        }
+    // Safety: we will modify the string by removing some ASCII characters in place
+    // and shifting other contents left to fill the gaps,
+    // so if it was valid UTF-8, it will remain that way.
+    let data = unsafe { path.as_mut_vec() };
+    let mut dst = 0;
+    let mut src = 0;
 
-        // Outer loop: one iteration per path component.
-        while src < end {
-            // Peek ahead for special path components: "/", ".", and "..".
-            match data.add(src).read() {
-                b'/' | b'\\' => {
-                    src += 1;
-                    continue;
-                }
-                b'.' => {
-                    let mut peek = src + 1;
-                    if peek == end {
-                        break; // Trailing '.', trim.
+    if let Some(b'/' | b'\\') = data.get(src) {
+        src += 1;
+        dst += 1;
+    };
+
+    // One iteration per path component.
+    while let Some(&current) = data.get(src) {
+        // Peek ahead for special path components: "/", ".", and "..".
+        match current {
+            b'/' | b'\\' => {
+                src += 1;
+                continue;
+            }
+            b'.' => {
+                let Some(&next) = data.get(src + 1) else {
+                    break; // Trailing '.', trim.
+                };
+                match next {
+                    b'/' | b'\\' => {
+                        // "./", skip.
+                        src += 2;
+                        continue;
                     }
-                    match data.add(peek).read() {
-                        b'/' | b'\\' => {
-                            // "./", skip.
-                            src += 2;
+                    // ".."
+                    b'.' => match data.get(src + 2) {
+                        None | Some(b'/' | b'\\') => {
+                            // ".." component, try to back up.
+                            if let Some(ofs) = components.pop() {
+                                dst = ofs;
+                            } else {
+                                unsafe { assert_unchecked(dst <= src) };
+                                data[dst] = b'.';
+                                dst += 1;
+                                data[dst] = b'.';
+                                dst += 1;
+                                if let Some(sep) = data.get(src + 2) {
+                                    data[dst] = *sep;
+                                    dst += 1;
+                                }
+                            }
+                            src += 3;
                             continue;
                         }
-                        b'.' => {
-                            // ".."
-                            peek = peek + (1);
-                            if !(peek == end || matches!(data.add(peek).read(), b'/' | b'\\')) {
-                                // Component that happens to start with "..".
-                                // Handle as an ordinary component.
-                            } else {
-                                // ".." component, try to back up.
-                                if let Some(ofs) = components.pop() {
-                                    dst = ofs;
-                                } else {
-                                    data.add(dst).write(b'.');
-                                    dst += 1;
-                                    data.add(dst).write(b'.');
-                                    dst += 1;
-                                    if peek != end {
-                                        data.add(dst).write(data.add(peek).read());
-                                        dst += 1;
-                                    }
-                                }
-                                src += 3;
-                                continue;
-                            }
+                        _ => {
+                            // Component that happens to start with "..".
+                            // Handle as an ordinary component.
                         }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-
-            // Mark this point as a possible target to pop to.
-            components.push(dst);
-
-            // Inner loop: copy one path component, including trailing '/'.
-            while src < end {
-                data.add(dst).write(data.add(src).read());
-                src += 1;
-                dst += 1;
-                if let b'/' | b'\\' = data.add(src - 1).read() {
-                    break;
+                    },
+                    _ => {}
                 }
             }
+            _ => {}
         }
 
-        if dst == 0 {
-            path.clear();
-            path.push_str(".");
-        } else {
-            path.as_mut_vec().set_len(dst);
-        }
+        // Mark this point as a possible target to pop to.
+        components.push(dst);
+
+        // Copy one path component, including trailing '/'.
+        let stop = match data[src..].iter().position(|c| matches!(c, b'/' | b'\\')) {
+            Some(pos) => src + pos + 1,
+            None => data.len(),
+        };
+        unsafe { assert_unchecked(dst <= src && src <= stop && stop <= data.len()) };
+        data.copy_within(src..stop, dst);
+        dst += stop - src;
+        src = stop;
     }
-    path
+
+    if dst == 0 {
+        data[0] = b'.';
+        dst = 1;
+    }
+    // Safety: dst <= src <= len
+    unsafe { data.set_len(dst) };
 }
 
 pub fn canon_path<T: Into<String>>(path: T) -> String {
-    canon_path_fast(path.into())
+    let mut path = path.into();
+    canon_path_fast(&mut path);
+    path
 }
 
 #[cfg(test)]
